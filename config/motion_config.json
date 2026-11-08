@@ -1,0 +1,116 @@
+{
+    "raise_arm": {
+        "steps": 200,
+        "left": {
+            "shoulder_pitch": 0.5,
+            "shoulder_roll": 1.0,
+            "elbow": 1.2
+        },
+        "right": {
+            "shoulder_pitch": 0.5,
+            "shoulder_roll": -1.0,
+            "elbow": 1.2
+        }
+    },
+    "wave": {
+        "repetitions": 3,
+        "wrist_yaw_high": 0.8,
+        "wrist_yaw_low": -0.8,
+        "steps": 80
+    },
+    "salute": {
+        "steps": 200,
+        "hold_steps": 300,
+        "left": {
+            "shoulder_pitch": 0.3,
+            "shoulder_roll": 0.6,
+            "elbow": 1.5,
+            "wrist_yaw": -0.5
+        },
+        "right": {
+            "shoulder_pitch": 0.3,
+            "shoulder_roll": -0.6,
+            "elbow": 1.5,
+            "wrist_yaw": 0.5
+        }
+    },
+    "walk": {
+        "cycles": 3,
+        "steps": 250,
+        "pause_steps": 80,
+        "weight_shift": {
+            "waist_roll_left": 0.08,
+            "waist_roll_right": -0.08,
+            "left_ankle_roll": 0.08,
+            "right_ankle_roll": -0.08
+        },
+        "left_lift": {
+            "left_hip_pitch": -0.15,
+            "left_knee": 0.3,
+            "left_ankle_pitch": -0.18
+        },
+        "right_lift": {
+            "right_hip_pitch": -0.15,
+            "right_knee": 0.3,
+            "right_ankle_pitch": -0.18
+        }
+    },
+    "slow_walk": {
+        "cycles": 4,
+        "steps": 450,
+        "pause_steps": 150,
+        "weight_shift": {
+            "waist_roll": 0.04,
+            "ankle_roll": 0.025
+        },
+        "leg_lift": {
+            "hip_pitch": -0.16,
+            "knee": 0.3,
+            "ankle_pitch": -0.12
+        },
+        "forward_lean": {
+            "waist_pitch": 0.03
+        },
+        "arm_swing": {
+            "shoulder_pitch": 0.06,
+            "elbow": 0.05
+        }
+    },
+    "forward_walk": {
+        "cycles": 2,
+        "steps": 700,
+        "pause_steps": 200,
+        "weight_shift": {
+            "waist_roll": 0.025,
+            "ankle_roll": 0.015
+        },
+        "forward_lean": {
+            "waist_pitch": 0.005
+        },
+        "swing_leg": {
+            "hip_pitch": -0.1,
+            "knee": 0.2,
+            "ankle_pitch": -0.06
+        },
+        "stance_push": {
+            "hip_pitch": 0.035,
+            "ankle_pitch": 0.035
+        },
+        "arm_swing": {
+            "shoulder_pitch": 0.0,
+            "elbow": 0.0
+        }
+    },
+    "balanced_walk": {
+        "steps": 6,
+        "pelvis_height": 0.75,
+        "ankle_ground_height": 0.0331362476,
+        "foot_clearance": 0.035,
+        "step_length": 0.06,
+        "com_forward_offset": 0.025,
+        "shift_seconds_slow": 6.0,
+        "shift_seconds_fast": 4.0,
+        "swing_seconds_slow": 3.0,
+        "swing_seconds_fast": 2.0
+    }
+}

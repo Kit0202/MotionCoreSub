@@ -1,0 +1,29 @@
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+
+# VS Code settings
+.vscode/
+
+# MuJoCo / runtime logs
+*.log
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Test/cache folders
+.pytest_cache/
+.coverage
+
+logs/
+
+outputs/
+# Per-session RL command files and logs
+outputs/rl_runtime/
