@@ -507,7 +507,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _controlsSection() => Column(
+  Widget _controlsSection() => model.isPickupScene ? _pickupControls() : Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       _section('02', 'Motion control', Icons.gamepad_outlined),
@@ -564,7 +564,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             ),
             const SizedBox(height: 6),
             const Text(
-              'RL mode: requested speed in m/s. Release the slider while walking to apply a change. Zero or Stop slows the robot and closes the walking simulation. Scripted mode uses a pace value from 0 to 1.',
+              'RL mode: requested speed in m/s. Release the slider while walking to apply a change. Zero or Stop slows the robot before returning to standing control. Scripted mode uses a pace value from 0 to 1.',
               style: TextStyle(color: _muted, fontSize: 12, height: 1.5),
             ),
             if (model.telemetryFresh && model.telemetry?.measuredSpeed != null)
@@ -598,7 +598,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             ),
             const SizedBox(height: 12),
             const Text(
-              'Wait for STOPPED before choosing another motion. The RL walking window closes after deceleration.',
+              'Wait for STOPPED before choosing another motion. The unified RL scene keeps the same simulation window open.',
               style: TextStyle(color: _muted, fontSize: 11, height: 1.5),
             ),
             if (model.statusFresh && model.status?.message != null &&
@@ -635,7 +635,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               ),
               children: [
                 const Text(
-                  'Stand, Wave and Salute use the original robot window. Stop RL walking before switching to these actions.',
+                  'Stop walking and wait for the robot to settle before choosing Stand, Wave or Salute.',
                   style: TextStyle(color: _muted, fontSize: 12, height: 1.5),
                 ),
                 const SizedBox(height: 12),
@@ -655,6 +655,138 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 ),
               ],
             ),
+          ],
+        ),
+      ),
+    ],
+  );
+
+  Widget _pickupControls() => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      _section('02', 'Can pickup', Icons.local_drink_outlined),
+      const SizedBox(height: 14),
+      _panel(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Tabletop can pickup',
+                style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16)),
+            const SizedBox(height: 10),
+            const Text('All four cans are on the table. Choose the type to find and pick up. '
+                'Place releases above the table for clearance. Reset scene restores all cans.',
+                style: TextStyle(color: _muted, fontSize: 12, height: 1.5)),
+            const SizedBox(height: 16),
+            InputDecorator(
+              decoration: const InputDecoration(labelText: 'Can to pick up', border: OutlineInputBorder()),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  key: const Key('can-selector'),
+                  isExpanded: true,
+                  value: model.status?.selectedCan,
+                  hint: const Text('Choose a can'),
+                  items: [
+                    for (final option in model.status?.canTypes ?? [])
+                      DropdownMenuItem<String>(value: option.id, child: Text(option.label)),
+                  ],
+                  onChanged: model.canSelectCan ? (value) {
+                    if (value != null) unawaited(model.selectCan(value));
+                  } : null,
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text('Changing the target leaves all cans in place. '
+                'Place the held can before choosing another target.',
+                style: TextStyle(color: _muted, fontSize: 12, height: 1.5)),
+            const SizedBox(height: 16),
+            Text(model.statusFresh ? model.status!.status.replaceAll('_', ' ') : 'Status unavailable',
+                key: const Key('pickup-status'),
+                style: const TextStyle(color: _mint, fontWeight: FontWeight.w700)),
+            if (model.statusFresh && model.status?.progress != null) ...[
+              const SizedBox(height: 10),
+              LinearProgressIndicator(value: model.status!.progress),
+            ],
+            if (model.statusFresh && model.status?.message != null) ...[
+              const SizedBox(height: 10),
+              Text(model.status!.message!,
+                  style: const TextStyle(color: _muted, fontSize: 12, height: 1.5)),
+            ],
+            if (model.statusFresh && model.status?.holding == true) ...[
+              const SizedBox(height: 10),
+              const Text('Grip detected: can held', style: TextStyle(color: _mint)),
+            ],
+            const SizedBox(height: 14),
+            const Text('Simulated RGB-D camera', style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
+            Text('Detected: ${model.status?.vision['detectedCan'] ?? '—'}'
+                ' • ${model.status?.vision['status'] ?? 'IDLE'}',
+                key: const Key('vision-result')),
+            if (model.status?.vision['detections'] is List)
+              Text('Seen on table: ${(model.status!.vision['detections'] as List).map((d) => d['detectedCan'] ?? 'unknown').join(', ')}',
+                  style: const TextStyle(color: _muted, fontSize: 12)),
+            if (model.status?.vision['confidence'] is num)
+              Text('Confidence: ${((model.status!.vision['confidence'] as num) * 100).toStringAsFixed(1)}%'),
+            if (model.status?.vision['position'] is List)
+              Text('Position (m): ${(model.status!.vision['position'] as List).map((v) => (v as num).toStringAsFixed(3)).join(', ')}'),
+            if (model.status?.vision['message'] is String)
+              Text(model.status!.vision['message'] as String,
+                  style: const TextStyle(color: _muted, fontSize: 12)),
+            if ((model.status?.vision['frameId'] ?? 0) != 0) ...[
+              const SizedBox(height: 10),
+              Image.network(
+                '${model.api.baseUrl}/robot/camera?frame=${model.status!.vision['frameId']}',
+                key: ValueKey('${model.api.baseUrl}-${model.status!.vision['frameId']}'),
+                height: 220, fit: BoxFit.contain,
+                errorBuilder: (_, __, ___) => const Text('Camera snapshot unavailable'),
+              ),
+              const Text('Snapshot from last scan', style: TextStyle(color: _muted, fontSize: 12)),
+            ],
+            const SizedBox(height: 18),
+            Wrap(spacing: 10, runSpacing: 10, children: [
+              OutlinedButton.icon(
+                key: const Key('scan-button'),
+                onPressed: model.canPickupAction('SCAN')
+                    ? () => unawaited(model.sendAction('SCAN')) : null,
+                icon: const Icon(Icons.camera_alt_outlined),
+                label: const Text('Find selected can'),
+              ),
+              FilledButton.icon(
+                key: const Key('grab-button'),
+                onPressed: model.canPickupAction('GRAB')
+                    ? () => unawaited(model.sendAction('GRAB')) : null,
+                icon: const Icon(Icons.front_hand_outlined),
+                label: const Text('Detect & pick up'),
+              ),
+              FilledButton.icon(
+                key: const Key('place-button'),
+                onPressed: model.canPickupAction('PLACE')
+                    ? () => unawaited(model.sendAction('PLACE')) : null,
+                icon: const Icon(Icons.table_restaurant_outlined),
+                label: const Text('Place can'),
+              ),
+              OutlinedButton(
+                key: const Key('resume-button'),
+                onPressed: model.canPickupAction('RESUME')
+                    ? () => unawaited(model.sendAction('RESUME')) : null,
+                child: const Text('Continue'),
+              ),
+              OutlinedButton(
+                key: const Key('reset-scene-button'),
+                onPressed: model.canPickupAction('RESET')
+                    ? () => unawaited(model.sendAction('RESET')) : null,
+                child: const Text('Reset scene'),
+              ),
+            ]),
+            const SizedBox(height: 14),
+            const Text('Stop pauses the arm and keeps its grip. '
+                'Choose Continue to resume a paused pickup or placement.',
+                style: TextStyle(color: _muted, fontSize: 12, height: 1.5)),
+            if (model.commandMessage != null) ...[
+              const SizedBox(height: 14),
+              Semantics(liveRegion: true, child: _notice(model.commandMessage!,
+                  model.commandFailed ? _red : _mint)),
+            ],
           ],
         ),
       ),

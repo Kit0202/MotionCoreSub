@@ -40,9 +40,14 @@ class DashboardController extends ChangeNotifier {
   bool get busy => pendingAction != null || stopping;
   bool get remoteBusy =>
       statusFresh &&
-      const {'STARTING', 'MOVING', 'WALKING', 'STANDING', 'STOPPING'}.contains(status?.status);
+      const {'STARTING', 'MOVING', 'WALKING', 'STANDING', 'STOPPING', 'GRABBING', 'PLACING', 'SCANNING'}.contains(status?.status);
+  bool get isPickupScene => status?.scene == 'pickup';
+  bool canPickupAction(String action) => connected && !busy && isPickupScene &&
+      (status?.availableActions?.contains(action) ?? false);
+  bool get canSelectCan => connected && !busy && isPickupScene &&
+      (status?.canSelectionAllowed ?? false);
   bool get canWalk =>
-      connected &&
+      !isPickupScene && connected &&
       !busy &&
       !remoteBusy &&
       !(telemetryFresh && telemetry?.fallen == true);
@@ -187,8 +192,12 @@ class DashboardController extends ChangeNotifier {
 
   Future<void> sendAction(String action) async {
     if (busy || !connected) return;
-    if (action == 'WALK' && !canWalk) return;
-    if (action != 'WALK' && !canDemoAction) return;
+    if (isPickupScene) {
+      if (!canPickupAction(action)) return;
+    } else {
+      if (action == 'WALK' && !canWalk) return;
+      if (action != 'WALK' && !canDemoAction) return;
+    }
     pendingAction = action;
     commandMessage = null;
     _statusRevision++;
@@ -202,6 +211,38 @@ class DashboardController extends ChangeNotifier {
     }
     pendingAction = null;
     _emit();
+  }
+
+  Future<void> selectCan(String canType) async {
+    if (!canSelectCan || !(status?.canTypes.any((o) => o.id == canType) ?? false)) return;
+    pendingAction = 'CAN';
+    commandMessage = null;
+    _statusRevision++;
+    _emit();
+    _action = _performCanSelection(canType);
+    await _action;
+    _action = null;
+    if (!_disposed) {
+      await _refresh;
+      await refresh();
+    }
+    pendingAction = null;
+    _emit();
+  }
+
+  Future<void> _performCanSelection(String canType) async {
+    try {
+      final data = await api.selectCan(canType);
+      if (!stopping && !_disposed) {
+        commandFailed = false;
+        commandMessage = data['message'] as String? ?? 'Can selected';
+      }
+    } catch (error) {
+      if (!stopping && !_disposed) {
+        commandFailed = true;
+        commandMessage = '$error Can selection was not confirmed.';
+      }
+    }
   }
 
   Future<void> _performAction(String action) async {

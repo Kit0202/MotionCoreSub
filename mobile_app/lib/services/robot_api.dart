@@ -102,6 +102,8 @@ class RobotApi {
       );
   Future<Map<String, dynamic>> changeSpeed(double speed) =>
       _request('/robot/speed', post: true, body: {'speed': speed});
+  Future<Map<String, dynamic>> selectCan(String canType) =>
+      _request('/robot/can', post: true, body: {'canType': canType});
   Future<Map<String, dynamic>> stopRobot() =>
       _request('/robot/stop', post: true);
   void close() => _client.close();

@@ -1,0 +1,13 @@
+{
+  "seed": 42,
+  "train_samples": 400,
+  "validation_samples": 100,
+  "accuracy": {
+    "cola": 1.0,
+    "tuna": 1.0,
+    "100plus": 1.0,
+    "pepsi": 1.0,
+    "unknown": 1.0
+  },
+  "scope": "Synthetic four-preset MuJoCo RGB crops; unknown examples are green cans. Not validated on real brands or arbitrary objects."
+}
