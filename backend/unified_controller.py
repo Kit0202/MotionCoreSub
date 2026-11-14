@@ -1,6 +1,6 @@
 """One articulated MuJoCo robot, one owner thread, one persistent viewer.
 
-The recurrent leg policy stays active at zero velocity during upper-body gestures.
+Standing uses double-support joint control; the recurrent policy runs only for locomotion.
 No model reload, root pinning, state copy, or subprocess occurs on motion changes.
 """
 from pathlib import Path
@@ -11,6 +11,7 @@ import time
 import numpy as np
 import mujoco
 from backend.rl_policy import G1Policy
+from backend.standing import StandingController
 
 
 class UnifiedController:
@@ -30,9 +31,19 @@ class UnifiedController:
         self.gesture_time = 0.
         self.still_time = 0.
         self.stop_time = 0.
+        self._stop_balancing = False
         self.anchor = self.robot.data.qpos[:2].copy()
         self.heading = 0.
-        self.arm_target = np.zeros(model.nu-12)
+        self.rest = np.zeros(model.nu-12)
+        for side, sign in [('left', 1), ('right', -1)]:
+            for joint, angle in [('shoulder_pitch', .1), ('shoulder_roll', .12*sign), ('elbow', 1.05)]:
+                aid = model.actuator(side+'_'+joint+'_joint').id
+                self.rest[aid-12] = angle
+                self.robot.data.qpos[model.jnt_qposadr[model.actuator_trnid[aid, 0]]] = angle
+        self.arm_target = self.rest.copy()
+        self.robot.data.ctrl[12:] = self.rest
+        mujoco.mj_forward(model, self.robot.data)
+        self.standing = StandingController(self.robot)
         self.gesture_start = self.arm_target.copy()
         self.return_start = None
         self._telemetry = self.robot.telemetry()
@@ -48,7 +59,7 @@ class UnifiedController:
         return value
 
     def _begin(self, action):
-        if self.status == 'STOPPING':
+        if self.status == 'STOPPING' and not self._stop_balancing:
             self.anchor = self.robot.data.qpos[:2].copy()
             self.heading = self._yaw()
         self.pending = None
@@ -56,7 +67,7 @@ class UnifiedController:
         self.gesture_time = 0.
         self.gesture_start = self.arm_target.copy()
         self.return_start = None
-        self.status = 'MOVING' if action in {'WAVE', 'SALUTE'} or np.max(np.abs(self.arm_target)) > .05 else ('STOPPED' if action == 'STOP' else 'IDLE')
+        self.status = 'MOVING' if action in {'WAVE', 'SALUTE'} or np.max(np.abs(self.arm_target-self.rest)) > .05 else ('STOPPED' if action == 'STOP' else 'IDLE')
         self.message = f'{action.title()} in the shared simulation'
 
     def execute_action(self, action, speed=0.):
@@ -71,6 +82,11 @@ class UnifiedController:
             if self.error:
                 return {'success':False, 'message':self.error}
             if self.status == 'FALLEN':
+                if action == 'STOP':
+                    self.speed = 0.
+                    self.pending = None
+                    return {'success':True, 'message':'Robot is fallen; motion remains stopped. Use Stand to reset upright.',
+                            'status':self.status, 'controller':'UNITREE_RL'}
                 if action != 'STAND':
                     return {'success':False, 'message':'Fall detected. Use Stand to reset upright.'}
                 # Recovery only: retain horizontal position. Normal transitions never reset.
@@ -79,25 +95,39 @@ class UnifiedController:
                 self.robot.data.qpos[:2] = xy
                 self.robot.counter = 0
                 self.robot.action[:] = 0
-                self.robot.command_speed = self.robot.measured_speed = self.robot.planar_speed = 0.
+                self.robot.requested_speed = self.robot.command_speed = self.robot.measured_speed = self.robot.planar_speed = 0.
+                self.robot.planar_velocity[:] = 0
                 if hasattr(self.robot.policy, 'reset_memory'):
                     self.robot.policy.reset_memory()
-                self.arm_target[:] = 0
+                self.arm_target[:] = self.rest
+                for aid in range(12, self.robot.model.nu):
+                    qa = self.robot.model.jnt_qposadr[self.robot.model.actuator_trnid[aid, 0]]
+                    self.robot.data.qpos[qa] = self.rest[aid-12]
+                self.robot.data.ctrl[12:] = self.rest
                 self.speed = 0.
                 self.anchor = xy.copy()
                 self.heading = 0.
                 mujoco.mj_forward(self.robot.model, self.robot.data)
+                self._telemetry = {**self.robot.telemetry(), 'timestamp':time.time(), 'source':'unified_mujoco'}
+                self.standing = StandingController(self.robot)
                 self._begin('STAND')
             elif action == 'WALK' and speed > 0:
-                if self.status in {'MOVING','STOPPING'} or np.max(np.abs(self.arm_target)) > .05:
+                if self.status in {'MOVING','STOPPING','STARTING'} or np.max(np.abs(self.arm_target-self.rest)) > .05:
                     return {'success':False, 'message':'Wait for the arms to return to rest before walking.'}
                 self.speed = speed
-                self.status, self.motion = 'WALKING', 'RL_WALK'
-                self.message = 'Walking in the same window'
+                if self.standing is not None:
+                    self.status, self.motion = 'STARTING', 'WALK_READY'
+                    self.gesture_time = 0.
+                    self.gesture_start = self.arm_target.copy()
+                    self.message = 'Returning arms to the walking posture'
+                else:
+                    self.status, self.motion = 'WALKING', 'RL_WALK'
+                    self.message = 'Walking in the same window'
             elif self.status in {'WALKING','STOPPING'}:
                 self.speed = 0.
                 if self.status != 'STOPPING':
                     self.stop_time = self.still_time = 0.
+                    self._stop_balancing = False
                 self.status = 'STOPPING'
                 self.pending = 'STOP' if action == 'WALK' else action
                 self.message = f'Slowing down before {self.pending.lower()}'
@@ -122,14 +152,20 @@ class UnifiedController:
     def _arms(self, dt):
         self.gesture_time += dt
         t = self.gesture_time
-        goal = np.zeros_like(self.arm_target)
+        rest = np.zeros_like(self.rest) if self.motion in {'WALK_READY', 'RL_WALK'} else self.rest
+        goal = rest.copy()
         if self.motion in {'WAVE','SALUTE'}:
             side = 'left' if self.motion == 'WAVE' else 'right'
-            values = ({'shoulder_pitch':-1.5, 'shoulder_roll':.5, 'elbow':0., 'wrist_yaw':0.}
-                      if self.motion == 'WAVE' else
-                      {'shoulder_pitch':-1.3, 'shoulder_roll':-.3, 'elbow':-.7, 'wrist_yaw':.3})
-            if self.motion == 'WAVE':
-                values['wrist_yaw'] = .45*math.sin(2*math.pi*(t-1.5)) if 1.5<t<4.5 else 0.
+            joints = ('shoulder_pitch', 'shoulder_roll', 'shoulder_yaw', 'elbow',
+                      'wrist_roll', 'wrist_pitch', 'wrist_yaw')
+            # Poses solved against the articulated model: vertical palm beside
+            # the head for Wave; horizontal fingers at the right temple for Salute.
+            pose = ((-.49214, .96483, .94414, -.67995, .47789, .18953, -.01674)
+                    if self.motion == 'WAVE' else
+                    (-1.0446, -1.13419, -.43391, -.35078, .93241, .02455, 1.29081))
+            values = dict(zip(joints, pose))
+            if self.motion == 'WAVE' and 1.5 < t < 4.5:
+                values['wrist_pitch'] += .20*math.sin(2*math.pi*(t-1.5))**3
             for joint, value in values.items():
                 goal[self.robot.model.actuator(side+'_'+joint+'_joint').id-12] = value
             if t < 1.5:
@@ -139,18 +175,22 @@ class UnifiedController:
                 if self.return_start is None:
                     self.return_start = self.arm_target.copy()
                 u = min(1., (t-4.5)/1.5); u=u*u*(3-2*u)
-                goal = self.return_start*(1-u)
+                goal = self.return_start*(1-u)+rest*u
             if t >= 6.:
                 self._begin('STAND')
-                goal[:] = 0
+                goal[:] = rest
         else:
             # Smooth cancellation/return; no abrupt arm target jump on Stop.
             u = min(1., t/1.5); u=u*u*(3-2*u)
-            goal = self.gesture_start*(1-u)
+            goal = self.gesture_start*(1-u)+rest*u
             if t >= 1.5 and self.status == 'MOVING':
                 self.status = 'STOPPED' if self.motion == 'STOP' else 'IDLE'
         self.arm_target[:] = goal
         self.robot.data.ctrl[12:] = goal
+        if self.standing is not None:
+            m, d = self.robot.model, self.robot.data
+            upper_v = m.jnt_dofadr[m.actuator_trnid[12:, 0]]
+            d.ctrl[12:] += d.qfrc_bias[upper_v]/m.actuator_gainprm[12:, 0]
 
     def _yaw(self):
         w,x,y,z = self.robot.data.qpos[3:7]
@@ -172,7 +212,30 @@ class UnifiedController:
                 return
             dt = self.robot.model.opt.timestep
             self._arms(dt)
-            self.robot.step(self.speed, balance_command=None if self.status in {'WALKING','STOPPING'} else self._balance_command())
+            if self.status == 'STARTING' and self.gesture_time >= 1.5:
+                self.robot.counter = 0
+                self.robot.action[:] = 0
+                if hasattr(self.robot.policy, 'reset_memory'):
+                    self.robot.policy.reset_memory()
+                self.standing = None
+                self.status, self.motion = 'WALKING', 'RL_WALK'
+                self.message = 'Walking in the same window'
+            balance = None
+            if self.status == 'STOPPING':
+                # Zero policy velocity alone can drift with the articulated model.
+                # Begin holding the current position after the speed ramp ends;
+                # never pull back toward the position where Stop was requested.
+                if self.robot.command_speed < .001:
+                    if not self._stop_balancing:
+                        self.anchor = self.robot.data.qpos[:2].copy()
+                        self.heading = self._yaw()
+                        self._stop_balancing = True
+                    balance = self._balance_command()
+            elif self.status != 'WALKING':
+                balance = self._balance_command()
+            torque = None if self.standing is None else self.standing.torque()
+            self.robot.step(self.speed if self.status in {'WALKING', 'STOPPING'} else 0.,
+                            balance_command=balance, leg_torque=torque)
             self._telemetry = {**self.robot.telemetry(), 'timestamp':time.time(), 'source':'unified_mujoco'}
             if self._telemetry['fallen']:
                 self.status, self.motion, self.speed = 'FALLEN','STOP',0.
@@ -180,7 +243,13 @@ class UnifiedController:
                 self.pending = None
             elif self.status == 'STOPPING':
                 self.stop_time += dt
-                stable = self.robot.command_speed < .001 and self.robot.planar_speed < .12
+                contacts = self._telemetry['leftFoot'] and self._telemetry['rightFoot']
+                slow = self.robot.command_speed < .001 and self.robot.planar_speed < .12
+                if self.standing is None and slow and contacts:
+                    self.standing = StandingController(self.robot)
+                    self.still_time = 0.
+                stable = (self.standing is not None and contacts and self.robot.planar_speed < .06
+                          and max(abs(self._telemetry['roll']), abs(self._telemetry['pitch'])) < .15)
                 self.still_time = self.still_time+dt if stable else 0.
                 if self.still_time >= 1. and self.stop_time >= 2.:
                     self._begin(self.pending or 'STOP')

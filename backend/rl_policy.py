@@ -57,11 +57,12 @@ class G1Policy:
         self.command_speed = 0.0
         self.measured_speed = 0.0
         self.planar_speed = 0.0
+        self.planar_velocity = np.zeros(2)
         self.floor = self.model.geom('floor').id
         self.feet = [self.model.body(s+'_ankle_roll_link').id for s in ('left', 'right')]
         mujoco.mj_forward(self.model, self.data)
 
-    def step(self, speed, ramp=True, balance_command=None):
+    def step(self, speed, ramp=True, balance_command=None, leg_torque=None):
         speed = float(speed)
         if not math.isfinite(speed) or not 0 <= speed <= 1:
             raise ValueError('RL forward speed must be finite and between 0 and 1 m/s.')
@@ -70,21 +71,27 @@ class G1Policy:
         # Limit acceleration/deceleration to avoid abrupt command jumps.
         self.command_speed += float(np.clip(speed-self.command_speed, -.5*dt, .5*dt)) if ramp else speed-self.command_speed
         d = self.data
-        if self.counter % self.decimation == 0:
-            self.obs[:3] = d.qvel[3:6]*self.cfg['ang_vel_scale']
-            self.obs[3:6] = gravity_orientation(d.qpos[3:7])
-            self.obs[6:9] = np.asarray([self.command_speed, 0, 0] if balance_command is None else balance_command)*self.cfg['cmd_scale']
-            self.obs[9:21] = (d.qpos[self.leg_q]-self.default)*self.cfg['dof_pos_scale']
-            self.obs[21:33] = d.qvel[self.leg_v]*self.cfg['dof_vel_scale']
-            self.obs[33:45] = self.action
-            phase = 2*math.pi*((self.counter*dt) % .8)/.8
-            self.obs[45:47] = [math.sin(phase), math.cos(phase)]
-            with torch.inference_mode():
-                self.action = self.policy(torch.from_numpy(self.obs).unsqueeze(0)).cpu().numpy().reshape(12).copy()
-            if not np.isfinite(self.action).all():
-                raise RuntimeError('Policy produced non-finite joint commands.')
-            self.target = self.action*self.cfg['action_scale']+self.default
-        d.ctrl[:12] = (self.target-d.qpos[self.leg_q])*self.kp-d.qvel[self.leg_v]*self.kd
+        if leg_torque is None:
+            if self.counter % self.decimation == 0:
+                self.obs[:3] = d.qvel[3:6]*self.cfg['ang_vel_scale']
+                self.obs[3:6] = gravity_orientation(d.qpos[3:7])
+                self.obs[6:9] = np.asarray([self.command_speed, 0, 0] if balance_command is None else balance_command)*self.cfg['cmd_scale']
+                self.obs[9:21] = (d.qpos[self.leg_q]-self.default)*self.cfg['dof_pos_scale']
+                self.obs[21:33] = d.qvel[self.leg_v]*self.cfg['dof_vel_scale']
+                self.obs[33:45] = self.action
+                phase = 2*math.pi*((self.counter*dt) % .8)/.8
+                self.obs[45:47] = [math.sin(phase), math.cos(phase)]
+                with torch.inference_mode():
+                    self.action = self.policy(torch.from_numpy(self.obs).unsqueeze(0)).cpu().numpy().reshape(12).copy()
+                if not np.isfinite(self.action).all():
+                    raise RuntimeError('Policy produced non-finite joint commands.')
+                self.target = self.action*self.cfg['action_scale']+self.default
+            d.ctrl[:12] = (self.target-d.qpos[self.leg_q])*self.kp-d.qvel[self.leg_v]*self.kd
+        else:
+            torque = np.asarray(leg_torque, dtype=float)
+            if torque.shape != (12,) or not np.isfinite(torque).all():
+                raise ValueError('Standing torques must be twelve finite values.')
+            d.ctrl[:12] = torque
         mujoco.mj_step(self.model, d)
         self.counter += 1
         w, x, y, z = d.qpos[3:7]
@@ -92,7 +99,11 @@ class G1Policy:
         forward = math.cos(yaw)*d.qvel[0]+math.sin(yaw)*d.qvel[1]
         alpha = 1-math.exp(-dt/.3)
         self.measured_speed += alpha*(float(forward)-self.measured_speed)
-        self.planar_speed += alpha*(float(np.linalg.norm(d.qvel[:2]))-self.planar_speed)
+        # Filter the velocity vector before taking its magnitude. Filtering
+        # magnitudes counts alternating gait sway as sustained translation and
+        # can prevent the articulated model from ever satisfying a stop.
+        self.planar_velocity += alpha*(d.qvel[:2]-self.planar_velocity)
+        self.planar_speed = float(np.linalg.norm(self.planar_velocity))
         if not np.isfinite(d.qpos).all() or not np.isfinite(d.qvel).all():
             raise RuntimeError('Simulation state became non-finite.')
 
