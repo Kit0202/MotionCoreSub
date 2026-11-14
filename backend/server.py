@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import logging
 from typing import Literal
 
 from fastapi import FastAPI, Request
@@ -9,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from backend.robot_controller import RobotController
 
+logger = logging.getLogger(__name__)
 
 def create_controller():
     import os
@@ -20,17 +22,20 @@ def create_controller():
         except Exception:
             if mode == "rl":
                 raise
+            logger.warning("Unified RL initialization failed; using scripted mode", exc_info=True)
     return RobotController(walk_mode="scripted")
-
-
-controller = create_controller()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Create a fresh runtime for each server lifespan, never at module import.
+    controller = create_controller()
     app.state.controller = controller
-    yield
-    controller.shutdown()
+    try:
+        yield
+    finally:
+        controller.shutdown()
+        del app.state.controller
 
 
 app = FastAPI(
@@ -60,8 +65,8 @@ class SpeedCommand(BaseModel):
     speed: float = Field(ge=0.0, le=1.0)
 
 
-def get_controller(request: Request) -> RobotController:
-    return getattr(request.app.state, "controller", controller)
+def get_controller(request: Request):
+    return request.app.state.controller
 
 
 @app.get("/")
